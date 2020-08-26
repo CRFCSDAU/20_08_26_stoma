@@ -1,0 +1,131 @@
+---
+title: ''
+author: ''
+date: ''
+output: 
+  html_document:
+    df_print: paged
+    keep_md: true
+  word_document:
+    reference_docx: style.1.docx
+---
+
+```{r setup, include = FALSE}
+
+  knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, 
+                        fig.width  = 6 * 1.67, fig.height = 6)
+  
+  library(tidyverse)
+  library(viridis)
+  library(flextable)
+  library(patchwork)
+
+```
+
+
+# Sample size
+
+## Background 
+
+Sometimes patients need a stoma, which is where you allow the contents of the digestive system to exit the body before getting to the colon. Urine and feces are then collected in a small bag attached to the body. Leakage of the bag is one of the key factors that affects patient quality of life. The goal of this project is to test new devices (bags) to see if they leak less than currently available devices. 
+
+To design and power the study, we need to have some understanding of how often 
+leaks occur, and how much of an improvement we would like to be able to detect in our study (the smallest effect size of interest, assuming it exists).  
+
+The best information I have at this point is a study of a 4k patients who reported how often leaks occurred over 6 month period. Unfortunately, the responses were measured on a 5-level scale indicating that they experienced leaks to "a very high degree" to "not at all". The study found that over 23% of respondents reported no leaks at all over 6 months.  However, what we *really* want to know is a rate - the number of leaks per unit time, so we can model it as a Poisson process (or similarly). 
+
+## Simulating the event rate
+
+So the first step is to see if I can find a reasonable parameterization of a Poisson distribution for a weekly rate that would result in ~23% of people over 6 months not having an event.
+
+```{r}
+
+# Example
+# Simulate 4k patients with lambda = 1 (leak per 6 months) and get the % with 
+# 0 events
+  prop_none <- function(n, lambda){
+    data <- rpois(n, lambda)
+    return(signif(table(data)["0"] / sum(table(data)), 3))
+  }
+  
+# prop_none(4000, 1)
+  
+```
+
+To get a handle on this, we repeatedly simulate from a Poisson distribution with 4k observations and various values for lambda (which in this case is the average number of leaks every 6 months). Then, for each of those simulations, we calculate the proportion of observations in the simulated data that has zero events. We are looking for the value of lambda where that proportion is about 0.23. 
+
+```{r}
+# Now let's do a larger simulation
+
+  lambda <- seq(0, 5, by = 0.1)
+  n <- 4000
+  out <- data_frame()
+  for(i in lambda){
+    out <- bind_rows(
+      out, 
+      data_frame(
+        lambda = i, 
+        prop_zero = replicate(1000, prop_none(n, i))
+      )
+    )
+  }
+  
+```
+
+```{r}
+
+  ggplot(out, aes(x = lambda, y = prop_zero, color = lambda)) +
+    geom_jitter(alpha = 0.01, width = 0.01) +
+    scale_color_viridis(guide = FALSE, "Events per 6 months") +
+    ylab("Proportion with zero events in 6 months") +
+    xlab("Events per 6 months (lambda)") +
+    geom_hline(yintercept = 0.23, linetype = "dashed", color = "red")
+
+```
+
+So we can see from the plot above, the value of lambda that results in 23% experiencing no leaks over a 6 month period is 1.5 (i.e. the patients, on average, experience 1.5 leaks per 6 months). 
+
+Now we look at a Poisson distribution with 4k observations and lambda = 1.5 and compare that to the observed distribution of responses in the study of 4k patients. Lo and behold, if we collapse the number of events in our simulated data to 0, 1, 2, 3, and 4+ (e.g. 4, 5, 6, 7, 8), the distribution actually matches up pretty well to the scale reported in the study. 
+
+```{r}
+
+# So let's assume lambda = 1.5
+
+  t1 <- table(rpois(4000, 1.5))
+
+  g1 <- data_frame(
+    lambda = names(t1), 
+    count = as.numeric(t1),
+    prop = count / sum(t1)
+  ) %>%
+    mutate(lambda = case_when(
+      lambda < 4 ~ lambda, 
+      lambda >= 4 ~ "4+"
+    )) %>%
+  ggplot(aes(x = lambda, y = prop)) +
+    geom_bar(stat = "identity") +
+    xlab("Events per 6 months (lambda)") +
+    ylab("Proportion (n = 4k)") +
+    ggtitle("Sampled from Poisson (n = 4k, lambda = 1.5)") +
+    theme(plot.title = element_text(size = 8, face = "bold")) 
+  
+  levs <- c("Very high degree", "High degree", "Some degree", 
+                 "Low degree", "Not at all")
+  g2 <- data_frame(
+    response = levs,
+    prop = c(0.06, 0.10, 0.25, 0.35, 0.23)
+  ) %>%
+    mutate(response = factor(response, levels = rev(levs))) %>%
+  ggplot(aes(x = response, y = prop)) +
+    geom_bar(stat = "identity") +
+    xlab("Events per 6 months (lambda)") +
+    ylab("Proportion (n = 4k)") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), 
+          plot.title = element_text(size = 8, face = "bold")) +
+    ggtitle("Observed in a sample (n = 4k)") 
+  
+  g1 | g2
+    
+
+```
+However, there is one problem, which is that "high degree" would have to equate to 3 events every 6 months for this to make sense; and very high degree would mean between 4 and 8 events in 6 months. I seriously doubt that is the case. So what we really need from these people is to get a better idea of what this event rate might actually be. What I do know, is that it's can't be, on average, once a week (or thereabouts) and still wind up with 23% never having a leak in a 6 month period. 
